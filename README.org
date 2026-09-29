@@ -111,7 +111,7 @@ Jail->>Proxy: Stop mitmdump process (PID cleanup)
 Jail->>Jail: Persist shell/python history to ~/.config/guix-agent/state
 #+end_src
 
-[[./images/sequence.png]]
+# [[./images/sequence.png]]
 
 # #+begin_src mermaid
 # sequenceDiagram
