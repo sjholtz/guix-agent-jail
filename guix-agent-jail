@@ -1,0 +1,194 @@
+#!/usr/bin/env bash
+
+set -eou pipefail
+
+# Default mitmproxy script path
+MITM_SCRIPT="$HOME/bin/inject_keys.py"
+
+# Display usage information
+usage() {
+    echo "Usage: $0 [-h] [-m mitm_script_path] [project_dir]"
+    echo
+    echo "Launches a Guix container environment for the specified Python project."
+    echo
+    echo "Arguments:"
+    echo "  project_dir  Directory of the project (default: current working directory)"
+    echo
+    echo "Options:"
+    echo "  -h           Show this help message and exit"
+    echo "  -m mitm_script_path Path to mitmproxy script (default: $HOME/bin/inject_keys.py)"
+    exit 0
+}
+
+# Parse command-line options
+while getopts "hm:" opt; do
+  case "$opt" in
+    h) usage ;;
+    m) MITM_SCRIPT="$OPTARG" ;;
+    \?)
+      echo "Usage: $0 [-h] [-m mitm_script_path] [project_dir]" >&2
+      exit 1
+      ;;
+  esac
+done
+shift $((OPTIND - 1))
+
+# Directory of the Python project (defaults to current directory)
+PROJECT_DIR="$(realpath "${1:-$(pwd)}")"
+
+if [ ! -d "$PROJECT_DIR" ]; then
+    echo "Error: Directory '$PROJECT_DIR' does not exist." >&2
+    exit 1
+fi
+
+# Ensure specified mitmproxy script exists
+if [ ! -f "$MITM_SCRIPT" ]; then
+    echo "Error: mitmproxy script '$MITM_SCRIPT' does not exist." >&2
+    exit 1
+fi
+
+# Persistent state directory on host
+STATE_DIR="$HOME/.config/guix-agent/state"
+mkdir -p "$STATE_DIR"
+chmod 700 "$STATE_DIR"
+
+# Tracked state for clean-up
+SPAWNED_MITM_PID=""
+CONTAINER_HOME=""
+
+# Cleanup hook executed on exit or termination signals
+cleanup() {
+    local exit_code=$?
+    trap - EXIT INT TERM
+
+    if [ -n "$SPAWNED_MITM_PID" ] && kill -0 "$SPAWNED_MITM_PID" 2>/dev/null; then
+        kill "$SPAWNED_MITM_PID" 2>/dev/null || true
+        wait "$SPAWNED_MITM_PID" 2>/dev/null || true
+        echo "Stopped mitmdump (PID: $SPAWNED_MITM_PID)."
+    fi
+
+    if [ -n "$CONTAINER_HOME" ] && [ -d "$CONTAINER_HOME" ]; then
+        # Preserve histories to persistent state directory before removing temp home
+        [ -f "$CONTAINER_HOME/.bash_history" ] && cp "$CONTAINER_HOME/.bash_history" "$STATE_DIR/bash_history"
+        [ -f "$CONTAINER_HOME/.lesshst" ] && cp "$CONTAINER_HOME/.lesshst" "$STATE_DIR/lesshst"
+        [ -f "$CONTAINER_HOME/.python_history" ] && cp "$CONTAINER_HOME/.python_history" "$STATE_DIR/python_history"
+        chmod 600 "$STATE_DIR"/* 2>/dev/null || true
+
+        rm -rf "$CONTAINER_HOME"
+    fi
+
+    exit "$exit_code"
+}
+
+# Trap script termination (EXIT), SIGINT (Ctrl+C), and SIGTERM
+trap cleanup EXIT INT TERM
+
+# Function to ensure mitmdump is running on a valid port
+ensure_mitmproxy() {
+    local port="${1:-8080}"
+    local max_attempts=10
+    local attempt=0
+
+    while [ "$attempt" -lt "$max_attempts" ]; do
+        # # Check if mitmdump is already running on 'port'
+        # if pgrep -u "$USER" -f "mitmdump.*-p[ =]*$port" >/dev/null 2>&1; then
+        #     echo "mitmdump is already running on port $port."
+        #     PORT="$port"
+        #     return 0
+        # fi
+
+        # # mitmdump is not running on 'port': Check if 'port' is being
+        # # used by another process and if it is, go to the next port
+        # if (echo > "/dev/tcp/127.0.0.1/$port") 2>/dev/null; then
+        #     echo "Port $port is in use by another process. Trying $((port + 1))..."
+        #     port=$((port + 1))
+        #     attempt=$((attempt + 1))
+        #     continue
+        # fi
+
+        # echo "Starting mitmdump on port $port ..."
+        # 'port' appears free; start mitmdump in the background
+        # mitmdump -s "$MITM_SCRIPT" -p "$port" >/dev/null 2>&1 &
+        echo "Attempting to start mitmdump on port $port..."
+
+        # Explicitly bind to loopback address (127.0.0.1)
+        mitmdump --listen-host 127.0.0.1 -s "$MITM_SCRIPT" -p "$port" >/dev/null 2>&1 &
+
+        # Record mitmdump's process ID so the EXIT trap knows to
+        # kill it and which PID to kill
+        SPAWNED_MITM_PID=$!
+
+        # Polling loop to verfiy health and port binding of mitmdump
+        local ready=0
+        for _ in {1..20}; do # Poll up to 2 seconds (20 x 0.1 sec)
+            # Check if process crashed or exited unexpectedly
+            if ! kill -0 "$SPAWNED_MITM_PID" 2>/dev/null; then
+                SPAWNED_MITM_PID=""
+                break
+            fi
+
+            # Check if port is actively listening
+            if $(nc -z 127.0.0.1 "$port") 2>/dev/null; then
+                ready=1
+                break
+            fi
+
+            sleep 0.1
+        done
+
+        if [ "$ready" -eq 1 ]; then
+            PORT="$port"
+            return 0
+        fi
+
+        # Handle failure (process died or failed to bind in time)
+        if [ -n "$SPAWNED_MITM_PID" ]; then
+            kill "$SPAWNED_MITM_PID" 2>/dev/null
+            wait "$SPAWNED_MITM_PID" 2>/dev/null || true
+            SPAWNED_MITM_PID=""
+        fi
+
+        port=$((port + 1))
+        attempt=$((attempt + 1))
+    done
+
+    echo "Error: Unable to start mitmdump after $max_attempts attempts." >&2
+    exit 1
+}
+
+# Resolve port and ensure proxy is active starting at 8080
+ensure_mitmproxy 8080
+
+# Ensure host container-bashrc exists
+CONTAINER_BASHRC="$HOME/.config/guix-agent/bashrc"
+if [ ! -f "$CONTAINER_BASHRC" ]; then
+    mkdir -p "$HOME/.config/guix-agent"
+    cat <<EOF > "$CONTAINER_BASHRC"
+export PS1=" \u@\h:\w\$ [guix-agent]"
+EOF
+fi
+
+# Create host state directory and temporary container home directory
+CONTAINER_HOME=$(mktemp -d "${TMPDIR:-/tmp}/guix-agent-home.XXXXXX")
+
+# Restore command histories from host state directory if present
+[ -f "$STATE_DIR/bash_history" ] && cp "$STATE_DIR/bash_history" "$CONTAINER_HOME/.bash_history"
+[ -f "$STATE_DIR/lesshst" ] && cp "$STATE_DIR/lesshst" "$CONTAINER_HOME/.lesshst"
+[ -f "$STATE_DIR/python_history" ] && cp "$STATE_DIR/python_history" "$CONTAINER_HOME/.python_history"
+
+# Substitute #PORT# with the dynamic $PORT directly into container
+sed "s/#PORT#/$PORT/g" "$CONTAINER_BASHRC" > "$CONTAINER_HOME/.bashrc"
+
+# Make sure directories exist before mounting them
+mkdir -p "$HOME/.cache/uv" "$HOME/.local/share/uv" "$HOME/.mitmproxy"
+
+# Start the container
+guix shell --container --emulate-fhs --network \
+  --share="$PROJECT_DIR"=/workspace \
+  --share="$CONTAINER_HOME"="$HOME" \
+  --share="$HOME/.cache/uv" \
+  --share="$HOME/.local/share/uv" \
+  --expose="$HOME/.mitmproxy"="$HOME/.mitmproxy" \
+  --preserve='^TERM$' \
+  gcc-toolchain uv python bash coreutils git findutils nss-certs less curl cmp grep \
+  -- sh -c "cd /workspace && exec bash"
