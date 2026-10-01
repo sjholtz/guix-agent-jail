@@ -7,7 +7,7 @@ MITM_SCRIPT="$HOME/bin/inject_keys.py"
 
 # Display usage information
 usage() {
-    echo "Usage: $0 [-h] [-m mitm_script_path] [project_dir]"
+    echo "Usage: $0 [-h] [-m inject_keys_path] [project_dir]"
     echo
     echo "Launches a Guix container environment for the specified Python project."
     echo
@@ -16,7 +16,7 @@ usage() {
     echo
     echo "Options:"
     echo "  -h           Show this help message and exit"
-    echo "  -m mitm_script_path Path to mitmproxy script (default: $HOME/bin/inject_keys.py)"
+    echo "  -m inject_keys_path Path to mitmproxy script (default: $HOME/bin/inject_keys.py)"
     exit 0
 }
 
@@ -26,7 +26,7 @@ while getopts "hm:" opt; do
     h) usage ;;
     m) MITM_SCRIPT="$OPTARG" ;;
     \?)
-      echo "Usage: $0 [-h] [-m mitm_script_path] [project_dir]" >&2
+      echo "Usage: $0 [-h] [-m inject_keys_path] [project_dir]" >&2
       exit 1
       ;;
   esac

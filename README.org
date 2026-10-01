@@ -11,8 +11,8 @@ establishes a strict zero-trust boundary around agent workloads.
 
 When building or running LLM agents with code execution capabilities,
 prompt injection or unintended file modifications pose critical
-security threats. This project mitigates both filesystem exfiltration
-and API key exfiltration:
+security threats. This project mitigates both unintended filesystem
+modifications and API key exfiltration:
 
 1. /Filesystem Containment/: The agent runs inside an isolated GNU
    Guix File Hierarchy Standard (FHS) container. It has access only to
@@ -49,7 +49,7 @@ transparently authorized at the host proxy boundary.
   |                                                                                         |
   |  +-------------------------------+             +-------------------------------------+  |
   |  | .env.guix-agent-jail          |             | mitmproxy (inject_keys.py)          |  |
-  |  | - HOST_OPENAI_API_KEY         |------------>| - Intercepts requests on :8080      |  |
+  |  | - HOST_OPENAI_API_KEY         |------------>| - Intercepts requests on port 8080  |  |
   |  | - HOST_ANTHROPIC_API_KEY      |             | - Identifies target host domain     |  |
   |  | - HOST_OLLAMA_API_KEY         |             | - Injects real API keys into header |  |
   |  | - HOST_LANGSMITH_API_KEY      |             +------------------+------------------+  |
@@ -60,7 +60,7 @@ transparently authorized at the host proxy boundary.
   |  |                                                             |  |                     |
   |  |  +-----------------------+    +--------------------------+  |  |                     |
   |  |  | Agent Process (uv/py) |    | Container Env (.bashrc)  |  |  |                     |
-  |  |  | - Executes agent code |--->| - HTTP_PROXY=:PORT       |--+--+                     |
+  |  |  | - Executes agent code |--->| - HTTP_PROXY=꞉PORT       |--+--+                     |
   |  |  | - Operates on         |    | - OPENAI_KEY="dummy_key" |  |                        |
   |  |  |   /workspace only     |    | - SSL_CERT_FILE set      |  |                        |
   |  |  +-----------------------+    +--------------------------+  |                        |
@@ -72,7 +72,7 @@ transparently authorized at the host proxy boundary.
   |  |  | (Host $PROJECT_DIR)   |                                  |                        |
   |  |  +-----------------------+                                  |                        |
   |  +-------------------------------------------------------------+                        |
-  +------------------------------------------------|----------------------------------------+
+  +------------------------------------------------+----------------------------------------+
                                                    | Upstream HTTPS Request
                                                    | with Valid Header
                                                    v
@@ -177,11 +177,23 @@ Jail->>Jail: Persist shell/python history to ~/.config/guix-agent/state
      (=api.openai.com=, =api.anthropic.com=, =ollama.com=,
      =api.smith.langchain.com=).
 
+   - Loads header mappings from
+     =~/.config/guix-agent/key-injector.toml=.
+
    - Loads live environment secrets from =.env.guix-agent-jail=
      located in the parent directory of the current workspace.
 
-   - Strips dummy headers and injects genuine API keys into the HTTP
-     request headers dynamically.
+   - Selects the appropriate header configuration based on the target
+     host and injects the corresponding API key.
+
+   - Supports =Authorization= headers with optional prefixes such as
+     =Bearer = and =x-api-key= headers.
+
+   - Supports an alternate TOML configuration path through a
+     =KEY_INJECTOR_CONFIG= environment variable.
+
+   - Replaces or sets request headers and injects genuine API keys
+     dynamically.
 
 3. Container Shell Configuration (=bashrc=)
 
@@ -216,16 +228,19 @@ Jail->>Jail: Persist shell/python history to ~/.config/guix-agent/state
      cd guix-agent-jail
    #+end_src
 
-2. Place the mitmproxy injector script in your home binary path (or
-   specify via =-m=):
+2. Place the mitmproxy injector script in your home binary path and
+   place its configuration file in the default configuration directory:
    #+begin_src bash
      mkdir -p ~/bin
-     cp inject_keys.py ~/bin/inject_keys.py
+     cp inject_keys.py ~/bin/
+     mkdir -p ~/.config/guix-agent
+     cp key-injector.toml ~/.config/guix-agent/
    #+end_src
 
 3. Configure host credentials:
 
-   Copy the example template and add your live provider keys:
+   Copy the example environment template to your project’s parent
+   directory:
    #+begin_src bash
      cp .env.example /<path>/.env.guix-agent-jail
      # Edit .env.guix-agent-jail with your provider keys
@@ -236,22 +251,83 @@ Jail->>Jail: Persist shell/python history to ~/.config/guix-agent/state
    in =/home/<user>/my-project/src/=, the =.env.guix-agent-jail=
    file must reside in =/home/<user>/my-project/=.
 
+   Edit the =.env.guix-agent-jail= file with your live provider API
+   keys.
+
+   The configuration path override can also be placed in this file. For
+   example:
+   #+begin_src bash
+     KEY_INJECTOR_CONFIG=/home/<user>/.config/guix-agent/key-injector.toml
+   #+end_src
+
+** Configure Header Injection
+
+The injector reads provider mappings from
+=~/.config/guix-agent/key-injector.toml= by default. This file
+contains no secrets; it simply maps target host URLs to environment
+variable names.
+
+To use a different configuration file, add it to the parent-directory
+=.env.guix-agent-jail= file exactly as shown above, or export
+=KEY_INJECTOR_CONFIG=<path>/key-injector.toml= before launching the
+sandbox, as shown below:
+
+#+begin_src bash
+  export KEY_INJECTOR_CONFIG=/path/to/key-injector.toml
+  guix-agent-jail
+#+end_src
+
+The =key-injector.toml= file looks like this:
+
+#+begin_src toml
+[auth]
+
+[[auth.headers]]
+host = "api.openai.com"
+environment_variable = "HOST_OPENAI_API_KEY"
+
+[[auth.headers]]
+host = "ollama.com"
+environment_variable = "HOST_OLLAMA_API_KEY"
+
+[x-api]
+
+[[x-api.headers]]
+host = "api.anthropic.com"
+environment_variable = "HOST_ANTHROPIC_API_KEY"
+
+[[x-api.headers]]
+host = "api.smith.langchain.com"
+environment_variable = "HOST_LANGSMITH_API_KEY"
+#+end_src
+
+The =[auth]= section injects the =Authorization= header. The =[x-api]=
+section injects the =x-api-key= header. Host matching supports an exact
+domain or a subdomain.
+
+Python 3.11 or newer is required because the loader uses the standard
+library =tomllib= module.
+
+The user should edit this file as needed to add or remove hosts that
+need API key access from within the container.
+
 ** Usage & Command Options
 
 The sandbox launcher automatically starts and stops =mitmdump= in the
 background.
 
 #+begin_src bash
-  guix-agent-jail [-h] [-m mitm_script_path] [project_dir]
+  guix-agent-jail [-h] [-m inject_keys_path] [project_dir]
 #+end_src
 
 *** Arguments & Options
 
 - =-h=: Display usage information and exit.
-- =-m mitm_script_path=: Path to the mitmproxy Python
+- =-m inject_keys_path=: Path to the mitmproxy Python
   script. (Default: =$HOME/bin/inject_keys.py=).
-- =project_dir=: Path to the Python project directory. (Default:
-  current working directory).
+- =project_dir=: Path to the Python project directory that will be
+  accessible inside the Guix container. (Default: current working
+  directory).
 
 *** Examples
 
