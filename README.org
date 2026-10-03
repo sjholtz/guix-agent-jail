@@ -80,7 +80,7 @@ transparently authorized at the host proxy boundary.
                                      | External Provider APIs       |
                                      | - api.openai.com             |
                                      | - api.anthropic.com          |
-                                     | - ollama.com
+                                     | - ollama.com                 |
                                      | - api.smith.langchain.com    |
                                      +------------------------------+
 #+end_src
@@ -110,34 +110,6 @@ User->>Jail: Exit / Ctrl+C
 Jail->>Proxy: Stop mitmdump process (PID cleanup)
 Jail->>Jail: Persist shell/python history to ~/.config/guix-agent/state
 #+end_src
-
-# [[./images/sequence.png]]
-
-# #+begin_src mermaid
-# sequenceDiagram
-# autonumber
-# actor Agent as Container Agent (Python/uv)
-# participant Env as Container Shell (.bashrc)
-# participant Proxy as Host mitmproxy (inject_keys.py)
-# participant HostSecrets as Host Secret Store (.env)
-# participant API as External LLM API (OpenAI/Anthropic)
-
-# Note over Agent, Env: Running inside Guix Container Sandbox
-# Agent->>Env: Read API Key from Environment
-# Env-->>Agent: Returns "dummy_key"
-# Agent->>Proxy: HTTPS Request (Authorization: Bearer dummy_key) via HTTP_PROXY:8080
-
-# Note over Proxy: Intercepted on Host Network Boundary
-# Proxy->>HostSecrets: Fetch real key (HOST_OPENAI_API_KEY)
-# HostSecrets-->>Proxy: Return live API Key
-# Proxy->>Proxy: Strip dummy header & Inject live API Key
-
-# Proxy->>API: Outbound HTTPS Request (Authorization: Bearer live_key)
-# API-->>Proxy: HTTP 200 OK Response
-# Proxy-->>Agent: Forward HTTP Response
-# #+end_src
-
-# [[./images/sequence-old.png]]
 
 * Component Breakdown
 
@@ -206,7 +178,7 @@ Jail->>Jail: Persist shell/python history to ~/.config/guix-agent/state
      =ANTHROPIC_API_KEY=, etc.)  to satisfy client library
      initialization requirements.
 
-   - Routes all network communication through ~http://127.0.0.1:PORT~
+   - Routes all network communication through =http://127.0.0.1:PORT=
      via =HTTP_PROXY= and =HTTPS_PROXY=.
 
    - Explicitly points =SSL_CERT_FILE= and =REQUESTS_CA_BUNDLE= to the
