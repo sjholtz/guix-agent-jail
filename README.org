@@ -30,12 +30,12 @@ modifications and API key exfiltration:
 
 * Threat Model & Security Guarantees
 
-| Attack Vector                       | Vulnerability / Impact                                                               | Sandbox Mitigation Strategy                                                                                               |
-|-------------------------------------+--------------------------------------------------------------------------------------+---------------------------------------------------------------------------------------------------------------------------|
-| Prompt Injection / Credential Theft | Agent attempts to read =~/.env=, =OPENAI_API_KEY=, or history to leak keys.          | Container environment only contains dummy key values. Real keys reside exclusively on the host.                           |
-| Arbitrary Host Modification         | Agent attempts to modify host configuration files (=~/.bashrc=, =/etc/=, host root). | Container isolation limits mount points to =/workspace=, isolated  temporary home, and persistent =uv= cache directories. |
-| Data Exfiltration                   | Agent attempts to read arbitrary files and transmit them externally.                 | Host filesystem is invisible except for the explicit project directory passed as an argument.                             |
-| MitM Interception Bypass            | Agent tries to bypass HTTPS proxying or drops custom certificates.                   | =SSL_CERT_FILE= and =REQUESTS_CA_BUNDLE= enforce strict trust against mitmproxy CA certificates.                          |
+| Attack Vector                       | Vulnerability / Impact                                            | Sandbox Mitigation Strategy                                                      |
+|-------------------------------------+-------------------------------------------------------------------+----------------------------------------------------------------------------------|
+| Prompt Injection / Credential Theft | Agent reads ~/.env, OPENAI_API_KEY, or history to leak keys.      | Container only contains dummy key values. Real keys reside the host.             |
+| Arbitrary Host Modification         | Agent modifies host configuration files (~/.bashrc, /etc/, etc.). | Container limited to /workspace, temporary home, uv cache directories.           |
+| Data Exfiltration                   | Agent reads arbitrary files and transmit them externally.         | Host filesystem is not available except project directory passed as an argument. |
+| MitM Interception Bypass            | Agent bypasses HTTPS proxying or drops custom certificates.       | SSL_CERT_FILE and _CA_BUNDLE enforce trust mitmproxy CA certificates.            |
 
 * System Architecture
 
