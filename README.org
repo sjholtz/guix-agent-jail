@@ -2,6 +2,8 @@
 #+author: Steven J Holtz
 #+options: toc:2 num:nil ^:nil
 
+#+html_head: <style>table tr:nth-child(even){background-color:#f2f2f2;}table,th,td{border:1px solid black;}th,td{padding: 5px;}</style>
+
 * Overview
 
 This repository provides an enterprise-grade execution sandbox for
@@ -43,36 +45,36 @@ transparently authorized at the host proxy boundary.
 
 ** ASCII Architecture Diagram
 
-#+begin_src ditaa :file ./images/environments.png
-  +-----------------------------------------------------------------------------------------+
-  | HOST MACHINE                                                                            |
-  |                                                                                         |
-  |  +-------------------------------+             +-------------------------------------+  |
-  |  | .env.guix-agent-jail          |             | mitmproxy (inject_keys.py)          |  |
-  |  | - HOST_OPENAI_API_KEY         |------------>| - Intercepts requests on port 8080  |  |
-  |  | - HOST_ANTHROPIC_API_KEY      |             | - Identifies target host domain     |  |
-  |  | - HOST_OLLAMA_API_KEY         |             | - Injects real API keys into header |  |
-  |  | - HOST_LANGSMITH_API_KEY      |             +------------------+------------------+  |
-  |  +-------------------------------+                                ^                     |
-  |                                                                   |                     |
-  |  +-------------------------------------------------------------+  | HTTPS               |
-  |  | GUIX CONTAINER ISOLATION                                    |  | (mitmproxy CA Trust)|
-  |  |                                                             |  |                     |
-  |  |  +-----------------------+    +--------------------------+  |  |                     |
-  |  |  | Agent Process (uv/py) |    | Container Env (.bashrc)  |  |  |                     |
-  |  |  | - Executes agent code |--->| - HTTP_PROXY=꞉PORT       |--+--+                     |
-  |  |  | - Operates on         |    | - OPENAI_KEY="dummy_key" |  |                        |
-  |  |  |   /workspace only     |    | - SSL_CERT_FILE set      |  |                        |
-  |  |  +-----------------------+    +--------------------------+  |                        |
-  |  |              |                                              |                        |
-  |  |              v                                              |                        |
-  |  |  +-----------------------+                                  |                        |
-  |  |  | Shared Directory      |                                  |                        |
-  |  |  | /workspace            |                                  |                        |
-  |  |  | (Host $PROJECT_DIR)   |                                  |                        |
-  |  |  +-----------------------+                                  |                        |
-  |  +-------------------------------------------------------------+                        |
-  +------------------------------------------------+----------------------------------------+
+#+begin_example
+  +------------------------------------------------------------------------------------------+
+  | HOST MACHINE                                                                             |
+  |                                                                                          |
+  |  +-------------------------------+             +-------------------------------------+   |
+  |  | .env.guix-agent-jail          |             | mitmproxy (inject_keys.py)          |   |
+  |  | - HOST_OPENAI_API_KEY         |------------>| - Intercepts requests on port 8080  |   |
+  |  | - HOST_ANTHROPIC_API_KEY      |             | - Identifies target host domain     |   |
+  |  | - HOST_OLLAMA_API_KEY         |             | - Injects real API keys into header |   |
+  |  | - HOST_LANGSMITH_API_KEY      |             +------------------+------------------+   |
+  |  +-------------------------------+                                ^                      |
+  |                                                                   |                      |
+  |  +-------------------------------------------------------------+  | HTTPS                |
+  |  | GUIX CONTAINER ISOLATION                                    |  | (mitmproxy CA Trust) |
+  |  |                                                             |  |                      |
+  |  |  +-----------------------+    +--------------------------+  |  |                      |
+  |  |  | Agent Process (uv/py) |    | Container Env (.bashrc)  |  |  |                      |
+  |  |  | - Executes agent code |--->| - HTTP_PROXY=꞉PORT       |--+--+                      |
+  |  |  | - Operates on         |    | - OPENAI_KEY="dummy_key" |  |                         |
+  |  |  |   /workspace only     |    | - SSL_CERT_FILE set      |  |                         |
+  |  |  +-----------------------+    +--------------------------+  |                         |
+  |  |              |                                              |                         |
+  |  |              v                                              |                         |
+  |  |  +-----------------------+                                  |                         |
+  |  |  | Shared Directory      |                                  |                         |
+  |  |  | /workspace            |                                  |                         |
+  |  |  | (Host $PROJECT_DIR)   |                                  |                         |
+  |  |  +-----------------------+                                  |                         |
+  |  +-------------------------------------------------------------+                         |
+  +------------------------------------------------+-----------------------------------------+
                                                    | Upstream HTTPS Request
                                                    | with Valid Header
                                                    v
@@ -83,7 +85,7 @@ transparently authorized at the host proxy boundary.
                                      | - ollama.com                 |
                                      | - api.smith.langchain.com    |
                                      +------------------------------+
-#+end_src
+#+end_example
 
 ** Sequence Diagram
 
