@@ -1,0 +1,19 @@
+[auth]
+
+[[auth.headers]]
+host = "api.openai.com"
+environment_variable = "HOST_OPENAI_API_KEY"
+
+[[auth.headers]]
+host = "ollama.com"
+environment_variable = "HOST_OLLAMA_API_KEY"
+
+[x-api]
+
+[[x-api.headers]]
+host = "api.anthropic.com"
+environment_variable = "HOST_ANTHROPIC_API_KEY"
+
+[[x-api.headers]]
+host = "api.smith.langchain.com"
+environment_variable = "HOST_LANGSMITH_API_KEY"
