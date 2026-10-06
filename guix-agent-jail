@@ -90,25 +90,6 @@ ensure_mitmproxy() {
     local attempt=0
 
     while [ "$attempt" -lt "$max_attempts" ]; do
-        # # Check if mitmdump is already running on 'port'
-        # if pgrep -u "$USER" -f "mitmdump.*-p[ =]*$port" >/dev/null 2>&1; then
-        #     echo "mitmdump is already running on port $port."
-        #     PORT="$port"
-        #     return 0
-        # fi
-
-        # # mitmdump is not running on 'port': Check if 'port' is being
-        # # used by another process and if it is, go to the next port
-        # if (echo > "/dev/tcp/127.0.0.1/$port") 2>/dev/null; then
-        #     echo "Port $port is in use by another process. Trying $((port + 1))..."
-        #     port=$((port + 1))
-        #     attempt=$((attempt + 1))
-        #     continue
-        # fi
-
-        # echo "Starting mitmdump on port $port ..."
-        # 'port' appears free; start mitmdump in the background
-        # mitmdump -s "$MITM_SCRIPT" -p "$port" >/dev/null 2>&1 &
         echo "Attempting to start mitmdump on port $port..."
 
         # Explicitly bind to loopback address (127.0.0.1)

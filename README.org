@@ -169,6 +169,15 @@ Jail->>Jail: Persist shell/python history to ~/.config/guix-agent/state
    - Replaces or sets request headers and injects genuine API keys
      dynamically.
 
+   - Writes injector messages at =INFO= level and above to
+     =inject_keys.log=. The default path is the parent of the directory
+     from which =guix-agent-jail= was launched. Set =KEY_INJECTOR_LOG=
+     to choose an explicit log-file path.
+
+   - Uses a dedicated file handler rather than =logging.basicConfig=,
+     so file logging still works when =mitmdump= has already configured
+     Python's root logger.
+
 3. Container Shell Configuration (=bashrc=)
 
    The container shell template (=~/.config/guix-agent/bashrc=):
@@ -186,13 +195,50 @@ Jail->>Jail: Persist shell/python history to ~/.config/guix-agent/state
    - Explicitly points =SSL_CERT_FILE= and =REQUESTS_CA_BUNDLE= to the
      proxy certificate.
 
+   These variables configure environment-aware HTTP clients. A client
+   using a custom transport may ignore them; configure that client's
+   proxy explicitly (for example, =openai_proxy= with LangChain's
+   =ChatOpenAI=) if its API requests do not appear in the injector
+   log. An example that uses this option:
+
+   #+begin_src python
+     import os
+     from langchain_openai import ChatOpenAI
+
+     model = ChatOpenAI(
+         model="A_model_name",
+         openai_proxy=os.environ["HTTPS_PROXY"],
+     )
+   #+end_src
+
 * Quickstart Guide
 
 ** Prerequisites
 
 - [[https://guix.gnu.org/][GNU Guix]] installed on the host operating system.
 
-- [[https://mitmproxy.org/][mitmproxy]] installed on the host machine.
+- [[https://docs.astral.sh/uv/getting-started/installation/][uv]] installed on the host machine.
+
+  Install =mitmproxy= version 10.1.2 or newer with =uv=. The injector
+  imports =dotenv= with =from dotenv import load_dotenv=; the package
+  that provides this module is named =python-dotenv=. Installing it as
+  a mitmproxy tool dependency makes it available in the same isolated
+  Python environment as =mitmdump=.
+
+  #+begin_src bash
+    uv tool install --with python-dotenv mitmproxy
+    uv tool update-shell
+  #+end_src
+
+  Do not use a system-packaged =mitmproxy= for this setup. A package
+  installed with =apt= may use a system Python environment that does
+  not include =python-dotenv=. The =uv tool update-shell= command adds
+  uv's tool executable directory to the shell configuration; open a
+  new terminal or reload that configuration afterward.
+
+  Confirm the selected executable with =command -v mitmdump=. If
+  needed, use =type -a mitmdump= to list all matching executables and
+  adjust =PATH= so the uv-installed executable takes precedence.
 
 ** Installation & Setup
 
@@ -320,6 +366,22 @@ background.
   #+begin_src bash
     guix-agent-jail -m /custom/path/inject_keys.py
   #+end_src
+
+*** Injector Log
+
+The injector writes =INFO= and higher severity messages to
+=inject_keys.log=. By default, this file is placed in the parent of the
+directory from which the launcher was started. To select a fixed path,
+set =KEY_INJECTOR_LOG= in the host environment before launching the
+jail:
+
+#+begin_src bash
+  export KEY_INJECTOR_LOG="$HOME/.local/state/guix-agent/inject_keys.log"
+  guix-agent-jail
+#+end_src
+
+If the log file is absent, first check the resolved path and confirm
+that =mitmdump= is the =uv= installation described above.
 
 * Security & Key Management Best Practices
 

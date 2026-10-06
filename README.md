@@ -4,22 +4,20 @@
 
 ## Table of Contents
 
--   [Overview](#orgaa05e0f)
--   [Threat Model & Security Guarantees](#org16e06c5)
--   [System Architecture](#orge17c4ca)
-    -   [ASCII Architecture Diagram](#org75be8a7)
-    -   [Sequence Diagram](#orge1b3f25)
--   [Component Breakdown](#orgc1f49bd)
--   [Quickstart Guide](#org387d85c)
-    -   [Prerequisites](#org3a151d7)
-    -   [Installation & Setup](#org10bd7af)
-    -   [Configure Header Injection](#orgfd392d9)
-    -   [Usage & Command Options](#orgf95ba2e)
--   [Security & Key Management Best Practices](#org18f1dd0)
+- [Overview](#org56322c6)
+- [Threat Model & Security Guarantees](#org1867b15)
+- [System Architecture](#orge838197)
+  - [ASCII Architecture Diagram](#org2eb0ebe)
+  - [Sequence Diagram](#orgbe49bc4)
+- [Component Breakdown](#org3b9b32f)
+- [Quickstart Guide](#org068bc01)
+  - [Prerequisites](#org743b0fd)
+  - [Installation & Setup](#orgd094fe3)
+  - [Configure Header Injection](#orgfec4133)
+  - [Usage & Command Options](#org8b688f0)
+- [Security & Key Management Best Practices](#org000cc92)
 
-
-
-<a id="orgaa05e0f"></a>
+<a id="org56322c6"></a>
 
 ## Overview
 
@@ -45,19 +43,18 @@ modifications and API key exfiltration:
    automatically managed host-level proxy (`mitmproxy`) that injects
    valid API keys on the fly.
 
-
-<a id="org16e06c5"></a>
+<a id="org1867b15"></a>
 
 ## Threat Model & Security Guarantees
 
 | Attack Vector | Vulnerability / Impact | Sandbox Mitigation Strategy |
-|---|---|---|
+|---|---|---:|
 | Prompt Injection / Credential Theft | Agent reads `~/.env`, `OPENAI_API_KEY`, or history to leak keys. | Container only contains dummy key values. Real keys reside on the host. |
 | Arbitrary Host Modification | Agent modifies host configuration files (`~/.bashrc`, `/etc/`, etc.). | Container limited to `/workspace`, temporary home, uv cache directories. |
 | Data Exfiltration | Agent reads arbitrary files and transmits them externally. | Host filesystem is not available except project directory passed as an argument. |
 | MitM Interception Bypass | Agent bypasses HTTPS proxying or drops custom certificates. | `SSL_CERT_FILE` and `*_CA_BUNDLE` enforce trust in mitmproxy CA certificates. |
 
-<a id="orge17c4ca"></a>
+<a id="orge838197"></a>
 
 ## System Architecture
 
@@ -65,8 +62,7 @@ The following diagrams illustrate how outbound LLM API requests
 originate from within the container with dummy keys and are
 transparently authorized at the host proxy boundary.
 
-
-<a id="org75be8a7"></a>
+<a id="org2eb0ebe"></a>
 
 ### ASCII Architecture Diagram
 
@@ -112,7 +108,7 @@ transparently authorized at the host proxy boundary.
                                        +------------------------------+
 ```
 
-<a id="orge1b3f25"></a>
+<a id="orgbe49bc4"></a>
 
 ### Sequence Diagram
 
@@ -140,14 +136,14 @@ Jail->>Proxy: Stop mitmdump process (PID cleanup)
 Jail->>Jail: Persist shell/python history to ~/.config/guix-agent/state
 ```
 
-<a id="orgc1f49bd"></a>
+<a id="org3b9b32f"></a>
 
 ## Component Breakdown
 
-### 1.  Container Jail Script (`guix-agent-jail`)
+### 1. Container Jail Script (`guix-agent-jail`)
 
-The shell launcher creates a lightweight, isolated GNU Guix
-container with FHS emulation and manages background dependencies:
+The shell launcher creates a lightweight, isolated GNU Guix container
+with FHS emulation and manages background dependencies:
 
 - **Command Line Interface**: Supports flexible flags for passing
   custom mitmproxy scripts (`-m`) and specifying the target project
@@ -173,7 +169,7 @@ container with FHS emulation and manages background dependencies:
 - **Certificate Mount**: Exposes `$HOME/.mitmproxy` read-only so the
   container can validate proxy TLS certificates.
 
-### 2.  Mitmproxy Key Injector (`inject_keys.py`)
+### 2. Mitmproxy Key Injector (`inject_keys.py`)
 
 A Python add-on for `mitmproxy` running on the host machine:
 
@@ -198,15 +194,24 @@ A Python add-on for `mitmproxy` running on the host machine:
 - Replaces or sets request headers and injects genuine API keys
   dynamically.
 
-### 3.  Container Shell Configuration (`bashrc`)
+- Writes injector messages at `INFO` level and above to
+  `inject_keys.log`. The default path is the parent of the directory
+  from which `guix-agent-jail` was launched. Set `KEY_INJECTOR_LOG` to
+  choose an explicit log-file path.
 
-The container shell template (`~/.config/guix-agent/bashrc`):
+- Uses a dedicated file handler rather than `logging.basicConfig`, so
+  file logging still works when `mitmdump` has already configured
+  Python's root logger.
+
+### 3. Container Shell Configuration (`bashrc`)
+
+The container shell template (`~/.config/guix-agent/
 
 - Automatically receives the dynamically allocated proxy port via sed
   substitution.
 
 - Exports dummy environment variables (`OPENAI_API_KEY`,
-  `ANTHROPIC_API_KEY`, etc.)  to satisfy client library initialization
+  `ANTHROPIC_API_KEY`, etc.) to satisfy client library initialization
   requirements.
 
 - Routes all network communication through `http://127.0.0.1:PORT` via
@@ -215,21 +220,57 @@ The container shell template (`~/.config/guix-agent/bashrc`):
 - Explicitly points `SSL_CERT_FILE` and `REQUESTS_CA_BUNDLE` to the
   proxy certificate.
 
-<a id="org387d85c"></a>
+These variables configure environment-aware HTTP clients. A client
+using a custom transport may ignore them; configure that client's
+proxy explicitly (for example, `openai_proxy` with LangChain's
+`ChatOpenAI`) if its API requests do not appear in the injector
+log. An example that uses this option:
+```python
+import os
+from langchain_openai import ChatOpenAI
+
+model = ChatOpenAI(
+    model="A_model_name",
+    openai_proxy=os.environ["HTTPS_PROXY"],
+)
+```
+
+<a id="org068bc01"></a>
 
 ## Quickstart Guide
 
-<a id="org3a151d7"></a>
+<a id="org743b0fd"></a>
 
 ### Prerequisites
 
 - [GNU Guix](https://guix.gnu.org/) installed on the host operating
   system.
 
-- [mitmproxy](https://mitmproxy.org/) installed on the host machine.
+- [uv](https://docs.astral.sh/uv/getting-started/installation/)
+  installed on the host machine.
 
+Install `mitmproxy` version 10.1.2 or newer with `uv`. The injector
+imports `dotenv` with `from dotenv import load_dotenv`; the package
+that provides this module is named `python-dotenv`. Installing it as a
+mitmproxy tool dependency makes it available in the same isolated
+Python environment as `mitmdump`.
 
-<a id="org10bd7af"></a>
+```bash
+uv tool install --with python-dotenv mitmproxy
+uv tool update-shell
+```
+
+Do not use a system-packaged `mitmproxy` for this setup. A package
+installed with `apt` may use a system Python environment that does not
+include `python-dotenv`. The `uv tool update-shell` command adds uv's
+tool executable directory to the shell configuration; open a new
+terminal or reload that configuration afterward.
+
+Confirm the selected executable with `command -v mitmdump`. If needed,
+use `type -a mitmdump` to list all matching executables and adjust
+`PATH` so the uv-installed executable takes precedence.
+
+<a id="orgd094fe3"></a>
 
 ### Installation & Setup
 
@@ -240,8 +281,7 @@ The container shell template (`~/.config/guix-agent/bashrc`):
    ```
 
 2. Place the mitmproxy injector script in your home binary path and
-   place its configuration file in the default configuration
-   directory:
+   place its configuration file in the default configuration directory:
    ```bash
    mkdir -p ~/bin
    cp inject_keys.py ~/bin/
@@ -272,7 +312,7 @@ The container shell template (`~/.config/guix-agent/bashrc`):
    KEY_INJECTOR_CONFIG=/home/<user>/.config/guix-agent/key-injector.toml
    ```
 
-<a id="orgfd392d9"></a>
+<a id="orgfec4133"></a>
 
 ### Configure Header Injection
 
@@ -285,14 +325,12 @@ To use a different configuration file, add it to the parent-directory
 `.env.guix-agent-jail` file exactly as shown above, or export
 `KEY_INJECTOR_CONFIG=<path>/key-injector.toml` before launching the
 sandbox, as shown below:
-
 ```bash
 export KEY_INJECTOR_CONFIG=/path/to/key-injector.toml
 guix-agent-jail
 ```
 
 The `key-injector.toml` file looks like this:
-
 ```toml
 [auth]
 
@@ -316,8 +354,8 @@ environment_variable = "HOST_LANGSMITH_API_KEY"
 ```
 
 The `[auth]` section injects the `Authorization` header. The `[x-api]`
-section injects the `x-api-key` header. Host matching supports an
-exact domain or a subdomain.
+section injects the `x-api-key` header. Host matching supports an exact
+domain or a subdomain.
 
 Python 3.11 or newer is required because the loader uses the standard
 library `tomllib` module.
@@ -325,7 +363,7 @@ library `tomllib` module.
 The user should edit this file as needed to add or remove hosts that
 need API key access from within the container.
 
-<a id="orgf95ba2e"></a>
+<a id="org8b688f0"></a>
 
 ### Usage & Command Options
 
@@ -363,7 +401,22 @@ guix-agent-jail [-h] [-m inject_keys_path] [project_dir]
   guix-agent-jail -m /custom/path/inject_keys.py
   ```
 
-<a id="org18f1dd0"></a>
+#### Injector Log
+
+The injector writes `INFO` and higher severity messages to
+`inject_keys.log`. By default, this file is associated with the
+project and is placed in the parent of the directory from which the
+launcher was started. To select a fixed path, set `KEY_INJECTOR_LOG`
+in the host environment before launching the jail:
+```bash
+export KEY_INJECTOR_LOG="$HOME/.local/state/guix-agent/inject_keys.log"
+guix-agent-jail
+```
+
+If the log file is absent, first check the resolved path and confirm
+that `mitmdump` is the `uv` installation as described above.
+
+<a id="org000cc92"></a>
 
 ## Security & Key Management Best Practices
 
