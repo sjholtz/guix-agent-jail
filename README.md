@@ -312,6 +312,11 @@ use `type -a mitmdump` to list all matching executables and adjust
    KEY_INJECTOR_CONFIG=/home/<user>/.config/guix-agent/key-injector.toml
    ```
 
+4. Copy `bashrc` into user configuration directory:
+   ```bash
+   cp bashrc ~/.config/guix-agent
+   ```
+
 <a id="orgfec4133"></a>
 
 ### Configure Header Injection

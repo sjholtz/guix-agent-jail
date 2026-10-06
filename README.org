@@ -280,6 +280,11 @@ Jail->>Jail: Persist shell/python history to ~/.config/guix-agent/state
      KEY_INJECTOR_CONFIG=/home/<user>/.config/guix-agent/key-injector.toml
    #+end_src
 
+4. Copy `bashrc` into user configuration directory:
+   #+begin_src bash
+     cp bashrc ~/.config/guix-agent
+   #+end_src
+
 ** Configure Header Injection
 
 The injector reads provider mappings from
