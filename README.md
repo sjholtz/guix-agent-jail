@@ -43,6 +43,12 @@ modifications and API key exfiltration:
    automatically managed host-level proxy (`mitmproxy`) that injects
    valid API keys on the fly.
 
+3. **Multi-Terminal Workspace Sharing**: Multiple terminals opened in
+   the same workspace automatically attach to the same `mitmdump`
+   proxy and share the same container home environment. Workspace
+   proxy and state lifecycles are managed using reference counting so
+   terminals can shut down in any order.
+
 <a id="org1867b15"></a>
 
 ## Threat Model & Security Guarantees
@@ -53,6 +59,7 @@ modifications and API key exfiltration:
 | Arbitrary Host Modification | Agent modifies host configuration files (`~/.bashrc`, `/etc/`, etc.). | Container limited to `/workspace`, temporary home, uv cache directories. |
 | Data Exfiltration | Agent reads arbitrary files and transmits them externally. | Host filesystem is not available except project directory passed as an argument. |
 | MitM Interception Bypass | Agent bypasses HTTPS proxying or drops custom certificates. | `SSL_CERT_FILE` and `*_CA_BUNDLE` enforce trust in mitmproxy CA certificates. |
+| Cross-Session State Leakage | Stale file permissions or zombie sessions leak credentials/state. | Strict 700/600 permission vaulting and active process reference counting. |
 
 <a id="orge838197"></a>
 
@@ -60,7 +67,8 @@ modifications and API key exfiltration:
 
 The following diagrams illustrate how outbound LLM API requests
 originate from within the container with dummy keys and are
-transparently authorized at the host proxy boundary.
+transparently authorized at the host proxy boundary across one or more
+active terminal sessions per workspace.
 
 <a id="org2eb0ebe"></a>
 
@@ -79,11 +87,11 @@ transparently authorized at the host proxy boundary.
     |  +-------------------------------+                                ^                      |
     |                                                                   |                      |
     |  +-------------------------------------------------------------+  | HTTPS                |
-    |  | GUIX CONTAINER ISOLATION                                    |  | (mitmproxy CA Trust) |
+    |  | GUIX CONTAINER ISOLATION (Workspace-Scoped)                 |  | (mitmproxy CA Trust) |
     |  |                                                             |  |                      |
     |  |  +-----------------------+    +--------------------------+  |  |                      |
-    |  |  | Agent Process (uv/py) |    | Container Env (.bashrc)  |  |  |                      |
-    |  |  | - Executes agent code |--->| - HTTP_PROXY=꞉PORT       |--+--+                      |
+    |  |  | Term 1 / Term 2       |    | Shared Workspace Home    |  |  |                      |
+    |  |  | - Agent Process (uv)  |--->| - HTTP_PROXY=꞉PORT       |--+--+                      |
     |  |  | - Operates on         |    | - OPENAI_KEY="dummy_key" |  |                         |
     |  |  |   /workspace only     |    | - SSL_CERT_FILE set      |  |                         |
     |  |  +-----------------------+    +--------------------------+  |                         |
@@ -117,23 +125,34 @@ sequenceDiagram
 autonumber
 actor User as Host User / Shell
 participant Jail as guix-agent-jail Script
+participant State as Host State (~/.config/guix-agent/state)
 participant Proxy as Host mitmproxy (inject_keys.py)
 participant Container as Guix Container Sandbox
 participant API as External LLM API (OpenAI/Anthropic/Ollama/LangSmith)
 
 User->>Jail: Launch script with options (-m script, project_dir)
-Jail->>Proxy: Auto-spawn mitmdump on available loopback port (8080+)
-Jail->>Container: Launch container & pass dynamic HTTP_PROXY port
-Note over Container: Running inside Guix Container Sandbox
-Container->>Container: Read dummy API keys from environment (.bashrc)
+Jail->>State: Hash project_dir & register client PID in WORKSPACE_STATE_DIR/clients
+alt First Terminal in Workspace
+Jail->>Proxy: Auto-spawn workspace mitmdump (port 8080+)
+Jail->>State: Seed shared workspace $HOME with global history
+else Secondary Terminal in Workspace
+Jail->>Proxy: Attach to existing workspace mitmdump
+end
+Jail->>Container: Launch container with shared workspace $HOME
 Container->>Proxy: HTTPS Request (Authorization: Bearer dummy_key)
-Proxy->>Proxy: Intercept request & inject live key from .env.guix-agent-jail
-Proxy->>API: Forward HTTPS Request with live header
+Proxy->>API: Inject real key & forward request
 API-->>Proxy: Return HTTP Response
 Proxy-->>Container: Forward Response
 User->>Jail: Exit / Ctrl+C
-Jail->>Proxy: Stop mitmdump process (PID cleanup)
-Jail->>Jail: Persist shell/python history to ~/.config/guix-agent/state
+Jail->>State: Unregister client PID
+alt Last Active Terminal in Workspace
+Jail->>State: Append & deduplicate history to global STATE_DIR
+Jail->>Proxy: Stop workspace mitmdump process
+Jail->>State: Clean up shared workspace home
+else Other Terminals Still Active
+Jail->>State: Keep mitmdump & shared $HOME running
+end
+Jail->>State: Enforce 700/600 permissions on STATE_DIR
 ```
 
 <a id="org3b9b32f"></a>
@@ -149,15 +168,39 @@ with FHS emulation and manages background dependencies:
   custom mitmproxy scripts (`-m`) and specifying the target project
   directory.
 
+- **Workspace Isolation & Deterministic Hashing**: Computes a SHA-256
+  hash of =PROJECT_DIR= to isolate states into dedicated directories
+  (`~/.config/guix-agent/state/projects/`). Different project
+  workspaces run on independent proxy ports and maintain isolated
+  states.
+
+- **Singleton Proxy & Multi-Terminal Support**: Multiple shells opened
+  in the same workspace attach to the same workspace `mitmdump`
+  instance and share a single container home directory
+  (`$WORKSPACE_STATE_DIR/home`).
+
+- **Reference-Counted Session Tracking**: Tracks active client
+  terminal process IDs in `$WORKSPACE_STATE_DIR/clients/`. Terminals
+  can close in any order without disrupting active shells. The proxy
+  and shared home directory are shut down and cleaned up only when the
+  last active session in the workspace exits.
+
+- **Global History Vaulting & Synchronization**: Maintains global
+  command histories (`.bash_history`, `.python_history`, `.lesshst`)
+  in `~/.config/guix-agent/state`. When the first session opens in a
+  workspace, it seeds the workspace home with global history. When the
+  last session exits, it appends workspace history back to the global
+  vault and de-duplicates `.bash_history` while preserving
+  chronological order.
+
+- **Strict Permission Vaulting**: Enforces `umask 077` and recursively
+  sets all state subdirectories to `700` (`rwx------`) and state files
+  to `600` (`rw-------`) on initialization and cleanup.
+
 - **Automated Proxy Lifecycle**: Dynamically finds an open port
   (starting at port `8080`), spawns `mitmdump` bound strictly to
   loopback (`127.0.0.1`), verifies health, and registers signal traps
   to guarantee proxy cleanup upon exit.
-
-- **Persistent History Vaulting**: Preserves container command
-  histories (`.bash_history`, `.python_history`, `.lesshst`) in host
-  storage (`~/.config/guix-agent/state`) across sandbox executions
-  with secure permissions.
 
 - **Package Manifest**: Provisions `gcc-toolchain`, `uv`, `python`,
   `git`, `curl`, `nss-certs`, and common utilities.
@@ -221,8 +264,8 @@ The container shell template (`~/.config/guix-agent/
   proxy certificate.
 
 These variables configure environment-aware HTTP clients. A client
-using a custom transport may ignore them; configure that client's
-proxy explicitly (for example, `openai_proxy` with LangChain's
+using a custom transport may ignore them; configure that client’s
+proxy explicitly (for example, `openai_proxy` with LangChain’s
 `ChatOpenAI`) if its API requests do not appear in the injector
 log. An example that uses this option:
 ```python
@@ -396,6 +439,15 @@ guix-agent-jail [-h] [-m inject_keys_path] [project_dir]
   guix-agent-jail
   ```
 
+- Opening a second terminal in the same workspace (attaches to
+  existing proxy & container home):
+  ```bash
+  # In terminal 2:
+
+  cd /home/<user>/project_dir/src/
+  guix-agent-jail
+  ```
+
 - Specifying a project directory explicitly:
   ```bash
   guix-agent-jail /home/<user>/my-project/src/
@@ -432,6 +484,11 @@ that `mitmdump` is the `uv` installation as described above.
 - **Certificate Security**: Treat the generated
   `mitmproxy-ca-cert.pem` certificate securely, as it permits local
   decryption of container-initiated TLS traffic.
+
+- **State File Permissions**: All files under
+  `~/.config/guix-agent/state` are strictly vault-protected with `600`
+  permissions for files and `700` for directories to ensure no
+  unprivileged local processes can read history or socket state.
 
 - **Key Rotation**: If keys are exposed or compromised during
   development, immediately revoke them in your API provider dashboard

@@ -2,6 +2,9 @@
 
 set -eou pipefail
 
+# Enforce 700 directory and 600 file permissions
+umask 077
+
 # Default mitmproxy script path
 MITM_SCRIPT="$HOME/bin/inject_keys.py"
 
@@ -47,35 +50,82 @@ if [ ! -f "$MITM_SCRIPT" ]; then
     exit 1
 fi
 
+enforce_permissions() {
+    if [ -d "$STATE_DIR" ]; then
+        find "$STATE_DIR" -type d  -exec chmod 700 {} + 2>/dev/null || true
+        find "$STATE_DIR" -type f  -exec chmod 600 {} + 2>/dev/null || true
+    fi
+}
+
 # Persistent state directory on host
 STATE_DIR="$HOME/.config/guix-agent/state"
-mkdir -p "$STATE_DIR"
-chmod 700 "$STATE_DIR"
+
+# Workspace specific state directory scoped to PROJECT_DIR
+PROJECT_HASH=$(echo -n "$PROJECT_DIR" | sha256sum | awk '{print $1}')
+WORKSPACE_STATE_DIR="$STATE_DIR/projects/$PROJECT_HASH"
+CLIENTS_DIR="$WORKSPACE_STATE_DIR/clients"
+
+mkdir -p "$CLIENTS_DIR"
+
+CLIENT_FILE="$CLIENTS_DIR/$$"
+touch "$CLIENT_FILE"
+
+# Create container home shared across terminals in the same workspace
+CONTAINER_HOME="$WORKSPACE_STATE_DIR/home"
+
+enforce_permissions
 
 # Tracked state for clean-up
 SPAWNED_MITM_PID=""
-CONTAINER_HOME=""
 
 # Cleanup hook executed on exit or termination signals
 cleanup() {
     local exit_code=$?
     trap - EXIT INT TERM
 
-    if [ -n "$SPAWNED_MITM_PID" ] && kill -0 "$SPAWNED_MITM_PID" 2>/dev/null; then
-        kill "$SPAWNED_MITM_PID" 2>/dev/null || true
-        wait "$SPAWNED_MITM_PID" 2>/dev/null || true
-        echo "Stopped mitmdump (PID: $SPAWNED_MITM_PID)."
+    # Unregister this terminal session
+    rm -f "$CLIENT_FILE"
+
+    # Garbage collect dead sessions and count remaining active clients
+    local remaining_clients=0
+    if [ -d "$CLIENTS_DIR" ]; then
+        for file in "$CLIENTS_DIR"/*; do
+            [ -e "$file" ] || continue
+            local client_pid="${file##*/}"
+            if kill -0 "$client_pid" 2>/dev/null; then
+                remaining_clients=$((remaining_clients + 1))
+            else
+                # Cleanup stale registration from unclean shutdown
+                rm -f "$file"
+            fi
+        done
+    fi
+
+    # Only kill mitmdump if no other terminal sessions are active on
+    # this workspace
+    if [ "$remaining_clients" -eq 0 ]; then
+        local pid_file="$WORKSPACE_STATE_DIR/mitmdump.pid"
+        if [ -f "$pid_file" ]; then
+            local mitm_pid=$(cat "$pid_file")
+            if [ -n "$mitm_pid" ] && kill -0 "$mitm_pid" 2>/dev/null; then
+                kill "$mitm_pid" 2>/dev/null || true
+                wait "$mitm_pid" 2>/dev/null || true
+                echo "Stopped mitmdump (PID: $mitm_pid}."
+            fi
+            rm -f "pid_file" "$WORKSPACE_STATE_DIR/mitmdump.port"
+        fi
     fi
 
     if [ -n "$CONTAINER_HOME" ] && [ -d "$CONTAINER_HOME" ]; then
-        # Preserve histories to persistent state directory before removing temp home
-        [ -f "$CONTAINER_HOME/.bash_history" ] && cp "$CONTAINER_HOME/.bash_history" "$STATE_DIR/bash_history"
-        [ -f "$CONTAINER_HOME/.lesshst" ] && cp "$CONTAINER_HOME/.lesshst" "$STATE_DIR/lesshst"
-        [ -f "$CONTAINER_HOME/.python_history" ] && cp "$CONTAINER_HOME/.python_history" "$STATE_DIR/python_history"
-        chmod 600 "$STATE_DIR"/* 2>/dev/null || true
+        # Preserve histories to per-workspace state directory before removing temp home
+        [ -f "$CONTAINER_HOME/.bash_history" ] && cp "$CONTAINER_HOME/.bash_history" "$WORKSPACE_STATE_DIR/bash_history"
+        [ -f "$CONTAINER_HOME/.lesshst" ] && cp "$CONTAINER_HOME/.lesshst" "$WORKSPACE_STATE_DIR/lesshst"
+        [ -f "$CONTAINER_HOME/.python_history" ] && cp "$CONTAINER_HOME/.python_history" "$WORKSPACE_STATE_DIR/python_history"
 
         rm -rf "$CONTAINER_HOME"
     fi
+
+    enforce_permissions
 
     exit "$exit_code"
 }
@@ -88,23 +138,37 @@ ensure_mitmproxy() {
     local port="${1:-8080}"
     local max_attempts=10
     local attempt=0
+    local pid_file="$WORKSPACE_STATE_DIR/mitmdump.pid"
+    local port_file="$WORKSPACE_STATE_DIR/mitmdump.port"
+
+    # Re-use existing mitmdump injector for the exact same workspace
+    if [ -f "$pid_file" ] && [ -f "$port_file" ]; then
+        local saved_pid=$(cat "$pid_file")
+        local saved_port=$(cat "$port_file")
+        if kill -0 "$saved_pid" 2>/dev/null && nc -z 127.0.0.1 "$saved_port" 2>/dev/null;  then
+            echo "Connected to existing mitmdump on port $saved_port for workspace '$PROJECT_DIR' (PID: $saved_pid)."
+            PORT="$saved_port"
+            return 0
+        fi
+        # Clear stale PID/port files if process died
+        rm -f "$pid_file" "$port_file"
+    fi
 
     while [ "$attempt" -lt "$max_attempts" ]; do
-        echo "Attempting to start mitmdump on port $port..."
+        echo "Attempting to start mitmdump on port $port for workspace '$PROJECT_DIR'."
 
-        # Explicitly bind to loopback address (127.0.0.1)
-        mitmdump --listen-host 127.0.0.1 -s "$MITM_SCRIPT" -p "$port" >/dev/null 2>&1 &
+        # Explicitly bind to loopback address (127.0.0.1) and ensure
+        # execution context is PROJECT_DIR
+        (cd "$PROJECT_DIR" && mitmdump --listen-host 127.0.0.1 -s "$MITM_SCRIPT" -p "$port" >/dev/null 2>&1) &
 
-        # Record mitmdump's process ID so the EXIT trap knows to
-        # kill it and which PID to kill
-        SPAWNED_MITM_PID=$!
+        # Remember mitmdump's process ID
+        local spawned_pid=$!
 
         # Polling loop to verfiy health and port binding of mitmdump
         local ready=0
         for _ in {1..20}; do # Poll up to 2 seconds (20 x 0.1 sec)
             # Check if process crashed or exited unexpectedly
-            if ! kill -0 "$SPAWNED_MITM_PID" 2>/dev/null; then
-                SPAWNED_MITM_PID=""
+            if ! kill -0 "$spawned_pid" 2>/dev/null; then
                 break
             fi
 
@@ -119,14 +183,16 @@ ensure_mitmproxy() {
 
         if [ "$ready" -eq 1 ]; then
             PORT="$port"
+            echo "$spawned_pid" > "$pid_file"
+            echo "$PORT" > "$port_file"
+            echo "$PROJECT_DIR" > "$WORKSPACE_STATE_DIR/project_path"
             return 0
         fi
 
         # Handle failure (process died or failed to bind in time)
-        if [ -n "$SPAWNED_MITM_PID" ]; then
-            kill "$SPAWNED_MITM_PID" 2>/dev/null
-            wait "$SPAWNED_MITM_PID" 2>/dev/null || true
-            SPAWNED_MITM_PID=""
+        if kill -0 "$spawned_pid" 2>/dev/null; then
+            kill "$spawned_pid" 2>/dev/null
+            wait "$spawned_pid" 2>/dev/null || true
         fi
 
         port=$((port + 1))
@@ -149,13 +215,14 @@ export PS1=" \u@\h:\w\$ [guix-agent]"
 EOF
 fi
 
-# Create host state directory and temporary container home directory
-CONTAINER_HOME=$(mktemp -d "${TMPDIR:-/tmp}/guix-agent-home.XXXXXX")
-
-# Restore command histories from host state directory if present
-[ -f "$STATE_DIR/bash_history" ] && cp "$STATE_DIR/bash_history" "$CONTAINER_HOME/.bash_history"
-[ -f "$STATE_DIR/lesshst" ] && cp "$STATE_DIR/lesshst" "$CONTAINER_HOME/.lesshst"
-[ -f "$STATE_DIR/python_history" ] && cp "$STATE_DIR/python_history" "$CONTAINER_HOME/.python_history"
+# Seed container home with globals histories if this is the first
+# active terminal in the workspace
+if [  ! -d "$CONTAINER_HOME" ]; then
+    mkdir -p "$CONTAINER_HOME"
+    [ -f "$STATE_DIR/bash_history" ] && cp "$STATE_DIR/bash_history" "$CONTAINER_HOME/.bash_history"
+    [ -f "$STATE_DIR/lesshst" ] && cp "$STATE_DIR/lesshst" "$CONTAINER_HOME/.lesshst"
+    [ -f "$STATE_DIR/python_history" ] && cp "$STATE_DIR/python_history" "$CONTAINER_HOME/.python_history"
+fi
 
 # Substitute #PORT# with the dynamic $PORT directly into container
 sed "s/#PORT#/$PORT/g" "$CONTAINER_BASHRC" > "$CONTAINER_HOME/.bashrc"
