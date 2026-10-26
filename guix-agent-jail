@@ -10,7 +10,7 @@ MITM_SCRIPT="$HOME/bin/inject_keys.py"
 
 # Display usage information
 usage() {
-    echo "Usage: $0 [-h] [-m inject_keys_path] [project_dir]"
+    echo "Usage: $0 [-h] [-m inject_keys_path] [-p pnpm_host_path] [project_dir]"
     echo
     echo "Launches a Guix container environment for the specified Python project."
     echo
@@ -20,6 +20,7 @@ usage() {
     echo "Options:"
     echo "  -h           Show this help message and exit"
     echo "  -m inject_keys_path Path to mitmproxy script (default: $HOME/bin/inject_keys.py)"
+    echo "  -p pnpm_host_path Path to pnpm installation (default: $HOME/.local/share/pnpm) Note: Use the parent of the 'bin' directory."
     exit 0
 }
 
@@ -28,8 +29,9 @@ while getopts "hm:" opt; do
   case "$opt" in
     h) usage ;;
     m) MITM_SCRIPT="$OPTARG" ;;
+    p) PNPM_HOST_PATH="$OPTARG" ;;
     \?)
-      echo "Usage: $0 [-h] [-m inject_keys_path] [project_dir]" >&2
+      echo "Usage: $0 [-h] [-m inject_keys_path] [-p pnpm_host_path] [project_dir]" >&2
       exit 1
       ;;
   esac
@@ -230,6 +232,9 @@ sed "s/#PORT#/$PORT/g" "$CONTAINER_BASHRC" > "$CONTAINER_HOME/.bashrc"
 # Make sure directories exist before mounting them
 mkdir -p "$HOME/.cache/uv" "$HOME/.local/share/uv" "$HOME/.mitmproxy"
 
+# Set path to pnpm on the container's host for exposing in container
+PNPM_HOST_PATH="${PNPM_HOST_PATH:-$HOME/.local/share/pnpm}"
+
 # Start the container
 guix shell --container --emulate-fhs --network \
   --share="$PROJECT_DIR"=/workspace \
@@ -237,6 +242,8 @@ guix shell --container --emulate-fhs --network \
   --share="$HOME/.cache/uv" \
   --share="$HOME/.local/share/uv" \
   --expose="$HOME/.mitmproxy"="$HOME/.mitmproxy" \
+  --expose="$PNPM_HOST_PATH"="/host-pnpm" \
   --preserve='^TERM$' \
-  gcc-toolchain uv python bash coreutils git findutils nss-certs less curl cmp grep \
+  gcc-toolchain uv python bash coreutils git findutils nss-certs less \
+  curl cmp grep zlib node sed \
   -- sh -c "cd /workspace && exec bash"

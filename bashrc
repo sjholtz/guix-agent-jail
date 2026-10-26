@@ -159,6 +159,9 @@ umask 0022
 bind '"\e[1;5D" backward-word'
 bind '"\e[1;5C" forward-word'
 
+# Export PATH with "exposed" pnpm install dir:
+export PATH="$PATH":/host-pnpm/bin
+
 # Set environment for mitmdump
 export http_proxy="http://127.0.0.1:#PORT#"
 export https_proxy="http://127.0.0.1:#PORT#"
